@@ -1,0 +1,23 @@
+{
+  "name": "rex",
+  "version": "0.0.1",
+  "description": "FRP with React Hooks",
+  "main": "index.js",
+  "devDependencies": {
+    "@preconstruct/cli": "^2.1.5",
+    "@types/react": "^17.0.38"
+  },
+  "dependencies": {
+    "react": "^17.0.2"
+  },
+  "author": {
+    "name": "Devansh Jethmalani",
+    "email": "jethmalani.devansh@gmail.com"
+  },
+  "license": "MIT",
+  "readme": "https://github.com/devanshj/rex/tree/main/README.md",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/devanshj/rex.git"
+  }
+}
