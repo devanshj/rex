@@ -1,5 +1,5 @@
 {
-  "name": "rex",
+  "name": "@devanshj/rex",
   "version": "0.0.1",
   "description": "FRP with React Hooks",
   "main": "dist/rex.cjs.js",
