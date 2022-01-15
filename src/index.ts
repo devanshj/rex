@@ -131,10 +131,9 @@ const aEvery = ((t: any[], p: any) => t.every(p)) as any as AEvery
 const isNotNothing =
   <T>(t: T): t is Exclude<T, Nothing> => (t as {}) !== nothing
 
+
 // ----------------------------------------
 // Bind instance
-
-
 
 type SwitchMap = <T, U>(f: (t: T) => Behavior<U>) => (t$: Behavior<T>) => Behavior<U>
 export const switchMap: SwitchMap = f => ([t, dt]) => {
