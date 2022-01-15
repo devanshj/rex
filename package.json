@@ -1,8 +1,8 @@
 {
   "name": "@devanshj/rex",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "FRP with React Hooks",
-  "main": "dist/rex.cjs.js",
+  "main": "dist/devanshj-rex.cjs.js",
   "entrypoint": [
     "src/index.ts"
   ],
