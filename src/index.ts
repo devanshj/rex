@@ -1,28 +1,42 @@
 import * as Re from "react"
 
-export type Behavior<T> = [value: T, unsubscribe: Unsubscribe]
+export type Behavior<T> =
+  [ valueKeyed: [value: T, key: Key]
+  , unsubscribe: Unsubscribe
+  , setParent: ($: Behavior<unknown>) => void
+  ]
+type Key = string & { __isKey: true }
 export type Unsubscribe = () => void
 
 export type Nothing = typeof nothing
 export const nothing = Symbol("Rex.nothing")
 
-type Subscribe = <T>(f: (value: T) => void) => ($: Behavior<T>) => void
-export const subscribe: Subscribe = f => ([t, _]) => Re.useEffect(() => f(t), [t])
-
-type SubscribeE = <T>(f: (value: Exclude<T, Nothing>) => void) => ($: Behavior<T>) => void
-type SubscribeEImpl = (f: (value: T_) => void) => ($: Behavior<T_ | Nothing>) => void
-const subscribeEImpl: SubscribeEImpl = f => ([t, _]) => {
-  Re.useEffect(() => {
-    if (t !== nothing) f(t)
-  }, [t])
-}
-export const subscribeE = subscribeEImpl as SubscribeE
-
 type Value = <T>($: Behavior<T>) => T
-export const value: Value = $ => $[0]
+export const value: Value = $ => $[0][0]
 
 type Unsubscriber = ($: Behavior<unknown>) => Unsubscribe
 export const unsubscriber: Unsubscriber = $ => $[1]
+
+const key = ($: Behavior<unknown>) => $[0][1]
+const firstKey = "0" as Key
+const nextKey = (key: Key) => (Number(key) + 1).toString() as Key
+const next = <T>(t: T) => ([_, k]: [unknown, Key]): Behavior<T>[0] => [t, nextKey(k)]
+
+type ParentSetter = <T>($: Behavior<T>) => (r$: Behavior<unknown>) => void
+const parentSetter: ParentSetter = $ => $[2]
+
+type Subscribe = <T>(f: (value: T) => void) => ($: Behavior<T>) => void
+export const subscribe: Subscribe = f => ([[t, k], _]) => Re.useEffect(() => void f(t), [k])
+
+type SubscribeE = <T>(f: (value: Exclude<T, Nothing>) => void) => ($: Behavior<T>) => void
+type SubscribeEImpl = (f: (value: T_) => void) => ($: Behavior<T_ | Nothing>) => void
+const subscribeEImpl: SubscribeEImpl = f => $ =>
+  l($, subscribe(t => {
+    if (t !== nothing) f(t)
+  }))
+
+export const subscribeE = subscribeEImpl as SubscribeE
+
 
 // ----------------------------------------
 // Subjects
@@ -31,13 +45,15 @@ type CreateBehavior = <T>(initialValue: T) =>
   [behavior: Behavior<T>, send: (t: T) => void]
 
 export const createBehavior: CreateBehavior = a => {
-  let [x, setX] = Re.useState(() => a)
+  let [[x, k], setX] = Re.useState([a, firstKey])
   let didUnsubscribe = Re.useRef(false)
 
-  let next = Re.useCallback(x => !didUnsubscribe.current && setX(x), [])
+  let next = Re.useCallback((x: typeof a) => {
+    if (!didUnsubscribe.current) setX(([_, k]) => [x, nextKey(k)])
+  }, [])
   let d = Re.useCallback(() => didUnsubscribe.current = true, [])
 
-  return [[x, d], next]
+  return [[[x, k], d, () => {}], next]
 }
 
 type CreateEvent = <T>() =>
@@ -61,7 +77,7 @@ type MapImpl =
     (t$: Behavior<T_ | Nothing>) => Behavior<U_ | Nothing>
 
 const mapImpl: MapImpl =
-  f => ([t, d]) => [t !== nothing ? f(t) : nothing, d]
+  f => ([[t, k], d, r]) => [[t !== nothing ? f(t) : nothing, k], d, r]
 
 export const map = mapImpl as Map
 
@@ -70,10 +86,11 @@ export const map = mapImpl as Map
 // Applicative instance
 
 type Of = <A>(a: A) => Behavior<A>
-export const of: Of = a => [Re.useState(() => a)[0], Re.useState(() => () => {})[0]]
+export const of: Of = a =>
+  [Re.useState([a, firstKey] as [typeof a, Key])[0], Re.useState(() => () => {})[0], () => {}]
 
 // ----------------------------------------
-// Apply instance (lift1, lift2, lift3, lift4, ..., liftN)
+// Apply instance (lift1, lift2, ...)
 
 type Combine =
   <T extends Behavior<unknown>[], U>
@@ -102,26 +119,30 @@ type CombineImpl =
     Behavior<U_ | Nothing>
 
 const combineImpl: CombineImpl = ($s, f) => {
-  let ts = $s.map(value).map(tryLastJust)
+  let ts = $s.map(tryLastJust)
   let ds = $s.map(unsubscriber)
+  let k = $s.map(key).join("") as Key
 
   return [
-    aEvery(ts, isNotNothing) ? f(ts) : nothing,
-    Re.useCallback(() => ds.forEach(d => d()), [...ds])
+    [aEvery(ts, isNotNothing) ? f(ts) : nothing, k],
+    Re.useCallback(() => ds.forEach(d => d()), [...ds]),
+    r$ => {
+      for (let $ of $s) parentSetter($)(r$)
+    }
   ]
 }
 
 export const combine = combineImpl as Combine
 
-type UseLastJust = <T>(t: T) => T | Extract<T, Nothing>
-type UseLastJustImpl = (t: T_ | Nothing) => T_ | Nothing
-const useLastJustImpl: UseLastJustImpl = t => {
-  let lastJust = Re.useRef(t)
+type UseLastJust = <T>(t: Behavior<T>) => T | Extract<T, Nothing>
+type UseLastJustImpl = (t: Behavior<T_ | Nothing>) => Behavior<T_ | Nothing>[0]
+const useLastJustImpl: UseLastJustImpl = ([[x, k], _]) => {
+  let lastJust = Re.useRef([x, k] as [typeof x, typeof k])
   Re.useEffect(() => {
-    if (t !== nothing) lastJust.current === t
-  }, [t])
+    lastJust.current = [x, k]
+  }, [k])
 
-  return t === nothing ? lastJust.current : nothing
+  return x === nothing ? lastJust.current : [x, k]
 }
 const tryLastJust = useLastJustImpl as UseLastJust
 
@@ -136,8 +157,9 @@ const isNotNothing =
 // Bind instance
 
 type SwitchMap = <T, U>(f: (t: T) => Behavior<U>) => (t$: Behavior<T>) => Behavior<U>
-export const switchMap: SwitchMap = f => ([t, dt]) => {
-  let [u, du] = createChildBehavior(f, t)
+export const switchMap: SwitchMap = f => $ => {
+  let [u, du] = createChildBehavior(f, $)
+  let dt = unsubscriber($)
 
   let previousDu = Re.useRef(undefined as Unsubscribe | undefined)
   Re.useEffect(() => {
@@ -145,31 +167,34 @@ export const switchMap: SwitchMap = f => ([t, dt]) => {
     previousDu.current = du
   }, [du])
   
-  return [u, Re.useCallback(() => (du(), dt()), [du, dt])];
+  return [
+    u, Re.useCallback(() => (du(), dt()), [du, dt]),
+    () => console.error("[@devanshj/rex]: Nested `switchMap` isn't implemented yet")
+  ]
 }
 
-type SwitchMapContext = 
-  | { isActive: false }
-  | { isActive: true, value: unknown }
+type ParentContext = 
+  | { isPresent: false }
+  | { isPresent: true, value: Behavior<unknown> }
 
-type SwitchMapContextImpl = 
-  | { isActive: boolean, value: unknown }
+type ParentContextImpl = 
+  | { isPresent: boolean, value: Behavior<unknown> | undefined  }
+ 
+const parentContextImpl: ParentContextImpl =
+  { isPresent: false, value: undefined }
 
-const switchMapContextImpl: SwitchMapContextImpl =
-  { isActive: false, value: undefined }
+export const parentContext =
+  parentContextImpl as ParentContext
 
-export const switchMapContext =
-  switchMapContextImpl as SwitchMapContext
-
-const createChildBehavior = <T, U>(f: (t: T) => Behavior<U>, t: T) => {
-  let $: Behavior<U>
-  let old = { ...switchMapContextImpl }
-  switchMapContextImpl.isActive = true
-  switchMapContextImpl.value = t
-  $ = f(t)
-  switchMapContextImpl.isActive = old.isActive
-  switchMapContextImpl.value = old.value
-  return $
+const createChildBehavior = <T, U>(f: (t: T) => Behavior<U>, t$: Behavior<T>) => {
+  let old = { ...parentContextImpl }
+  parentContextImpl.isPresent = true
+  parentContextImpl.value = t$
+  let u$ = f(value(t$))
+  parentSetter(u$)(t$)
+  parentContextImpl.isPresent = old.isPresent
+  parentContextImpl.value = old.value
+  return u$
 }
 
 
@@ -184,21 +209,15 @@ type FoldImpl =
   (f: (u: U_, t: T_) => U_, u: U_) =>
     (t$: Behavior<T_ | Nothing>) => Behavior<U_ | Nothing>
 
-const foldImpl: FoldImpl = (f, u) => ([t, d]) => {
-  let [x, setX] = Re.useState(() => u)
+const foldImpl: FoldImpl = (f, u) => ([tk, d, r]) => {
+  let [[x, k], setX] = Re.useState([u, firstKey])
 
-  if (switchMapContext.isActive) {
-    let w = switchMapContext.value
-    Re.useEffect(() => {
-      if (w !== nothing) setX(u)
-    }, [w])
+  if (parentContext.isPresent) {  
+    l(parentContext.value, subscribeE(() => setX(next(u))))
   }
+  l([tk, d, r], subscribeE(t => setX(next(f(x, t)))))
 
-  Re.useEffect(() => {
-    if (t !== nothing) setX(f(x, t))
-  }, [t])
-
-  return [x, d]
+  return [[x, k], d, r]
 }
 
 export const fold = foldImpl as Fold
@@ -208,7 +227,7 @@ export const fold = foldImpl as Fold
 // Monoid instance
 
 export type Never = Behavior<Nothing>
-export const never: Never = [nothing, () => {}]
+export const never: Never = [[nothing, firstKey], () => {}, () => {}]
 
 
 type Merge =
@@ -231,22 +250,17 @@ const mergeImpl: MergeImpl = $s => {
     for (let t of ts) if (t !== nothing) return t
     return nothing
   }
-  let [u, setU] = Re.useState(selectFirst)
+  let [u, setU] = Re.useState([selectFirst(), firstKey] as [T_ | Nothing, Key])
 
-  if (switchMapContext.isActive) {
-    let w = switchMapContext.value
-    Re.useEffect(() => {
-      if (w !== nothing) setU(selectFirst)
-    }, [w])
+  if (parentContext.isPresent) {
+    l(parentContext.value, subscribeE(() => setU(next(selectFirst()))))
+  }
+ 
+  for (let $ of $s) {
+    l($, subscribeE(u => setU(next(u))))
   }
 
-  for (let t of ts) {
-    Re.useEffect(() => {
-      setU(t)
-    }, [t])
-  }
-
-  return [u, Re.useCallback(() => ds.forEach(d => d()), [...ds])];
+  return [u, Re.useCallback(() => ds.forEach(d => d()), [...ds]), () => {}]
 }
 export const merge = mergeImpl as Merge
 
@@ -269,44 +283,36 @@ type FilterImpl =
   ) =>
     (t$: Behavior<T_ | U_ | Nothing>) => Behavior<U_ | Nothing>
 
-const filterImpl: FilterImpl = p => ([t, d]) =>
-  [t === nothing ? nothing : p(t) ? t : nothing, d]
+const filterImpl: FilterImpl = p => ([[t, k], d, r]) =>
+  [[t === nothing ? nothing : p(t) ? t : nothing, k], d, r]
 
 export const filter = filterImpl as Filter
 
 
 type Take = <T>(n: number) => ($: Behavior<T>) => Behavior<T | Nothing>
 type TakeImpl = (n: number) => ($: Behavior<T_ | Nothing>) => Behavior<T_ | Nothing>
-const takeImpl: TakeImpl = n => ([t, d]) => {
+const takeImpl: TakeImpl = n => $ => {
   if (n === 0) console.error("[@devanshj/rex] `Rex.take` expected a number >= 0")
   let c = Re.useRef(0)
 
-  if (switchMapContext.isActive) {
-    let w = switchMapContext.value
-    Re.useEffect(() => {
-      if (w !== nothing) c.current = 0
-    }, [w])
+  if (parentContext.isPresent) {
+    l(parentContext.value, subscribeE(() => c.current = 0))
   }
 
-  Re.useEffect(() => {
-    if (t === nothing) return
-    if (c.current === n) d()
+  l($, subscribeE(() => {
+    if (c.current === n) unsubscriber($)()
     c.current++
-  }, [t])
+  }))
 
-  return [t, d]
+  return $
 }
 export const take = takeImpl as Take
 
 
 type TakeUntil = <T>(a$: Behavior<unknown>) => ($: Behavior<T>) => Behavior<T | Nothing>
-export const takeUntil: TakeUntil = ([a, _]) => ([t, dt]) => {
-  Re.useEffect(() => {
-    if (a === nothing) return
-    dt()
-  }, [a])
-
-  return [t, dt]
+export const takeUntil: TakeUntil = a$ => ([t, dt, r]) => {
+  l(a$, subscribeE(dt))
+  return [t, dt, r]
 }
 
 
@@ -317,18 +323,19 @@ type From =
   <T>($: (next: (t: T) => void) => () => void) => Behavior<T | Nothing>
 
 export const from: From = $ => {
-  let [x, setX] = Re.useState(nothing as Parameters<Parameters<typeof $>[0]>[0] | Nothing)
+  let [x, setX] = Re.useState([nothing, firstKey] as [Parameters<Parameters<typeof $>[0]>[0] | Nothing, Key])
   let [d, setD] = Re.useState(() => () => {})
+  let parent = Re.useRef<Behavior<unknown> | undefined>()
 
   Re.useEffect(() => {
-    if (switchMapContext.isActive && switchMapContext.value === nothing) return
-    let d = $(setX)
-    setD(d)
+    if (parent.current && value(parent.current) === nothing) return;
+    let d = $(v => setX(next(v)))
+    setD(() => d)
 
     return d
-  }, [$, ...(switchMapContext.isActive ? [switchMapContext.value] : [])])
+  }, [$, parent.current ? value(parent.current) : undefined])
 
-  return [x, d]
+  return [x, d, $ => parent.current = $]
 }
 
 
@@ -370,7 +377,7 @@ type IntervalImpl =
 
 const intervalImpl: IntervalImpl = (duration, { leading = false } = {}) =>
   merge([
-    ...(leading ? [of({})] : []),
+    ...(leading ? [of({})] : []),  
     from<{}>(Re.useCallback($ => {
       let i = window.setTimeout(() => $({}), duration)
       return () => window.clearTimeout(i)
@@ -378,3 +385,8 @@ const intervalImpl: IntervalImpl = (duration, { leading = false } = {}) =>
   ])
 
 export const interval = intervalImpl as Interval
+
+// ----------------------------------------
+// extras
+
+const l = <A, R>(a: A, f: (a: A) => R) => f(a)
