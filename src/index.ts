@@ -97,17 +97,12 @@ export const of: Of = a =>
 // Apply instance (lift1, lift2, ...)
 
 type Combine =
-  <T extends Behavior<unknown>[], U>
-    ( $s: [...T]
-    , f:
-      ( vs: 
-        { [I in keyof T]:
-            T[I] extends Behavior<infer U> ? Exclude<U, Nothing> : never
-        }
-      ) => U
-    ) =>
+  <T extends Behavior<unknown>[]>
+    ($s: [...T]) =>
       Behavior<
-        | U
+        | { [I in keyof T]:
+            T[I] extends Behavior<infer U> ? Exclude<U, Nothing> : never
+          }
         | Extract<
             { [I in keyof T]:
                 T[I] extends Behavior<infer V> ? V : never
@@ -117,19 +112,17 @@ type Combine =
       >
 
 type CombineImpl = 
-  ( $s: Behavior<T_ | Nothing>[]
-  , f: (vs: T_[]) => U_
-  ) =>
-    Behavior<U_ | Nothing>
+  ($s: Behavior<T_ | Nothing>[]) =>
+    Behavior<T_[] | Nothing>
 
-const combineImpl: CombineImpl = ($s, f) => {
+const combineImpl: CombineImpl = $s => {
   let ts = $s.map(tryLastJust)
   let vs = ts.map(x => x[0])
   let ds = $s.map(unsubscriber)
   let k = $s.map(key).join("") as Key
 
   return [
-    [aEvery(vs, isNotNothing) ? f(vs) : nothing, k],
+    [aEvery(vs, isNotNothing) ? vs : nothing, k],
     Re.useCallback(() => ds.forEach(d => d()), [...ds]),
     r$ => {
       for (let $ of $s) parentSetter($)(r$)
@@ -330,15 +323,10 @@ export const takeUntil: TakeUntil = a$ => ([t, dt, r]) => {
 // ----------------------------------------
 // Temporals
 
-type MapWithPrevious =
-  <T, U>(f: (c: Exclude<T, Nothing>, p: Exclude<T, Nothing> | undefined) => U) =>
-    ($: Behavior<T>) => Behavior<U | Extract<T, Nothing>>
+type Previous = <T>($: Behavior<T>) => Behavior<T | undefined>
+type PreviousImpl = ($: Behavior<T_ | Nothing>) => Behavior<T_ | Nothing | undefined>
 
-type MapWithPreviousImpl =
-  (f: (c: T_, p: T_ | undefined) => U_) =>
-    ($: Behavior<T_ | Nothing>) => Behavior<U_ | Nothing>
-
-const mapWithPreviousImpl: MapWithPreviousImpl = f => $ => {
+const previousImpl: PreviousImpl = $ => {
   let previousT = Re.useRef(undefined as T_ | undefined)
   let previousParent = Re.useRef(undefined as unknown | undefined)
   let previousPreviousParent = Re.useRef(undefined as unknown | undefined)
@@ -364,15 +352,13 @@ const mapWithPreviousImpl: MapWithPreviousImpl = f => $ => {
    
   let t = value($)
   let u =
-    t === nothing ? nothing : f(t,
-      shouldPreviousTBeUndefined.current
-        ? undefined 
-        : previousT.current
-    )
+    t === nothing ? nothing :
+    shouldPreviousTBeUndefined.current ? undefined  :
+    previousT.current
 
   return [[u, key($)], $[1], $[2]]
 }
-export const mapWithPrevious = mapWithPreviousImpl as MapWithPrevious
+export const previous = previousImpl as Previous
 
 
 // ----------------------------------------
