@@ -25,17 +25,21 @@ const next = <T>(t: T) => ([_, k]: [unknown, Key]): Behavior<T>[0] => [t, nextKe
 type ParentSetter = <T>($: Behavior<T>) => (r$: Behavior<unknown>) => void
 const parentSetter: ParentSetter = $ => $[2]
 
-type Subscribe = <T>(f: (value: T) => void) => ($: Behavior<T>) => void
-export const subscribe: Subscribe = f => ([[t, k], _]) => Re.useEffect(() => void f(t), [k])
+type SubscribeB = <T>(f: (value: T) => void) => ($: Behavior<T>) => void
+export const subscribeB: SubscribeB = f => $ => {
+  Re.useEffect(() => {
+    f(value($))
+  }, [key($)])
+}
 
-type SubscribeE = <T>(f: (value: Exclude<T, Nothing>) => void) => ($: Behavior<T>) => void
-type SubscribeEImpl = (f: (value: T_) => void) => ($: Behavior<T_ | Nothing>) => void
-const subscribeEImpl: SubscribeEImpl = f => $ =>
-  l($, subscribe(t => {
+type Subscribe = <T>(f: (value: Exclude<T, Nothing>) => void) => ($: Behavior<T>) => void
+type SubscribeImpl = (f: (value: T_) => void) => ($: Behavior<T_ | Nothing>) => void
+const subscribeImpl: SubscribeImpl = f => $ =>
+  l($, subscribeB(t => {
     if (t !== nothing) f(t)
   }))
 
-export const subscribeE = subscribeEImpl as SubscribeE
+export const subscribe = subscribeImpl as Subscribe
 
 
 // ----------------------------------------
@@ -120,11 +124,12 @@ type CombineImpl =
 
 const combineImpl: CombineImpl = ($s, f) => {
   let ts = $s.map(tryLastJust)
+  let vs = ts.map(x => x[0])
   let ds = $s.map(unsubscriber)
   let k = $s.map(key).join("") as Key
 
   return [
-    [aEvery(ts, isNotNothing) ? f(ts) : nothing, k],
+    [aEvery(vs, isNotNothing) ? f(vs) : nothing, k],
     Re.useCallback(() => ds.forEach(d => d()), [...ds]),
     r$ => {
       for (let $ of $s) parentSetter($)(r$)
@@ -134,7 +139,7 @@ const combineImpl: CombineImpl = ($s, f) => {
 
 export const combine = combineImpl as Combine
 
-type UseLastJust = <T>(t: Behavior<T>) => T | Extract<T, Nothing>
+type UseLastJust = <T>(t: Behavior<T>) => Behavior<T | Extract<T, Nothing>>[0]
 type UseLastJustImpl = (t: Behavior<T_ | Nothing>) => Behavior<T_ | Nothing>[0]
 const useLastJustImpl: UseLastJustImpl = ([[x, k], _]) => {
   let lastJust = Re.useRef([x, k] as [typeof x, typeof k])
@@ -212,10 +217,10 @@ type FoldImpl =
 const foldImpl: FoldImpl = (f, u) => ([tk, d, r]) => {
   let [[x, k], setX] = Re.useState([u, firstKey])
 
-  if (parentContext.isPresent) {  
-    l(parentContext.value, subscribeE(() => setX(next(u))))
+  if (parentContext.isPresent) {
+    l(parentContext.value, subscribe(() => setX(next(u))))
   }
-  l([tk, d, r], subscribeE(t => setX(next(f(x, t)))))
+  l([tk, d, r], subscribe(t => setX(next(f(x, t)))))
 
   return [[x, k], d, r]
 }
@@ -234,9 +239,14 @@ type Merge =
   <T extends Behavior<unknown>[]>
     ($s: [...T]) =>
       Behavior<
-        { [I in keyof T]:
-            T[I] extends Behavior<infer V> ? V : never
-        }[number]
+        Exclude<
+          { [I in keyof T]:
+              T[I] extends Behavior<infer V> ? V : never
+          }[number],
+          { [I in keyof T]:
+              T[I] extends Behavior<Nothing> ? never : Nothing
+          }[number]
+        >
       >
 
 type MergeImpl = 
@@ -251,16 +261,17 @@ const mergeImpl: MergeImpl = $s => {
     return nothing
   }
   let [u, setU] = Re.useState([selectFirst(), firstKey] as [T_ | Nothing, Key])
-
-  if (parentContext.isPresent) {
-    l(parentContext.value, subscribeE(() => setU(next(selectFirst()))))
-  }
  
   for (let $ of $s) {
-    l($, subscribeE(u => setU(next(u))))
+    l($, subscribe(u => setU(next(u))))
   }
 
-  return [u, Re.useCallback(() => ds.forEach(d => d()), [...ds]), () => {}]
+  return [
+    u, Re.useCallback(() => ds.forEach(d => d()), [...ds]),
+    r$ => {
+      for (let $ of $s) parentSetter($)(r$)
+    }
+  ]
 }
 export const merge = mergeImpl as Merge
 
@@ -296,10 +307,10 @@ const takeImpl: TakeImpl = n => $ => {
   let c = Re.useRef(0)
 
   if (parentContext.isPresent) {
-    l(parentContext.value, subscribeE(() => c.current = 0))
+    l(parentContext.value, subscribe(() => c.current = 0))
   }
 
-  l($, subscribeE(() => {
+  l($, subscribe(() => {
     if (c.current === n) unsubscriber($)()
     c.current++
   }))
@@ -311,9 +322,57 @@ export const take = takeImpl as Take
 
 type TakeUntil = <T>(a$: Behavior<unknown>) => ($: Behavior<T>) => Behavior<T | Nothing>
 export const takeUntil: TakeUntil = a$ => ([t, dt, r]) => {
-  l(a$, subscribeE(dt))
+  l(a$, subscribe(dt))
   return [t, dt, r]
 }
+
+
+// ----------------------------------------
+// Temporals
+
+type MapWithPrevious =
+  <T, U>(f: (c: Exclude<T, Nothing>, p: Exclude<T, Nothing> | undefined) => U) =>
+    ($: Behavior<T>) => Behavior<U | Extract<T, Nothing>>
+
+type MapWithPreviousImpl =
+  (f: (c: T_, p: T_ | undefined) => U_) =>
+    ($: Behavior<T_ | Nothing>) => Behavior<U_ | Nothing>
+
+const mapWithPreviousImpl: MapWithPreviousImpl = f => $ => {
+  let previousT = Re.useRef(undefined as T_ | undefined)
+  let previousParent = Re.useRef(undefined as unknown | undefined)
+  let previousPreviousParent = Re.useRef(undefined as unknown | undefined)
+  let shouldPreviousTBeUndefined = Re.useRef(false);
+
+  Re.useEffect(() => {
+    let p = value($)
+    if (p === nothing) return
+    previousT.current = p
+
+    if (shouldPreviousTBeUndefined.current) {
+      shouldPreviousTBeUndefined.current = false
+    }
+  }, [key($)])
+
+  if (parentContext.isPresent) {
+    l(parentContext.value, subscribeB(v => {
+      previousPreviousParent.current = previousParent.current
+      previousParent.current = v
+      shouldPreviousTBeUndefined.current = previousPreviousParent.current === nothing;
+    }))
+  }
+   
+  let t = value($)
+  let u =
+    t === nothing ? nothing : f(t,
+      shouldPreviousTBeUndefined.current
+        ? undefined 
+        : previousT.current
+    )
+
+  return [[u, key($)], $[1], $[2]]
+}
+export const mapWithPrevious = mapWithPreviousImpl as MapWithPrevious
 
 
 // ----------------------------------------
@@ -333,7 +392,7 @@ export const from: From = $ => {
     setD(() => d)
 
     return d
-  }, [$, parent.current ? value(parent.current) : undefined])
+  }, [$, parent.current ? key(parent.current) : undefined])
 
   return [x, d, $ => parent.current = $]
 }
