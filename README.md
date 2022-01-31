@@ -1,4 +1,4 @@
-`@devanshj/rex` — FRP with React hooks — https://devanshj.me/writings/use-state-more-like-use-behavior
+`@devanshj/rex` — FRP with React hooks — Read more here: https://devanshj.me/writings/use-state-more-like-use-behavior
 
 
 ![rex-demo](https://user-images.githubusercontent.com/30295578/151855750-64bcc022-a34b-4d9f-a05f-ff96bfcdc907.gif)<br/>
